@@ -1,0 +1,11 @@
+# Build output — regenerate with ./build.sh
+build/
+
+# macOS
+.DS_Store
+
+# Tracked on purpose (do NOT ignore):
+#   Resources/colornames.csv          bundled MIT color-name list
+#   Resources/colornames-LICENSE.txt  its licence, required by MIT
+#   Resources/AppIcon.icns            generated, but the build needs it present
+#   tools/icon-source.png             icon art; replace it with your own
