@@ -62,9 +62,24 @@ if [[ -d Resources ]]; then
     cp -R Resources/. "$APP/Contents/Resources/"
 fi
 
-# Ad-hoc signature. Enough to run locally and to keep the login item stable;
-# not notarized, so this build is for your machine, not for handing out.
-codesign --force --sign - "$APP" >/dev/null 2>&1
+# Sign with a stable local identity if one exists. This matters for more than
+# tidiness: an ad-hoc signature is derived from the binary itself, so every
+# rebuild looks like a different app to macOS and Screen Recording permission is
+# revoked — which silently disables the zoom loupe. A certificate keeps the
+# identity constant across rebuilds, so the permission granted once sticks.
+#
+# Create the certificate with tools/make-signing-cert.sh. Still not notarized:
+# this build is for this machine, not for distribution.
+SIGN_IDENTITY="Swatch Monster Local Signing"
+
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "$SIGN_IDENTITY"; then
+    codesign --force --sign "$SIGN_IDENTITY" "$APP" >/dev/null 2>&1
+    echo "==> Signed as \"$SIGN_IDENTITY\""
+else
+    codesign --force --sign - "$APP" >/dev/null 2>&1
+    echo "==> Signed ad-hoc (no \"$SIGN_IDENTITY\" identity found)"
+    echo "    Screen Recording permission will reset on each rebuild."
+fi
 
 echo "==> Built $APP"
 
