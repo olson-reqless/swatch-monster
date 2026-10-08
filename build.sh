@@ -15,7 +15,16 @@ MIN_MACOS="14.0"
 BUILD_DIR="build"
 APP="$BUILD_DIR/$APP_NAME.app"
 
-echo "==> Building $APP_NAME $VERSION"
+# Build against the SDK matching the running macOS. A Command Line Tools update
+# can make a newer beta SDK the default, and the 27.0 one ships without the
+# SwiftUI macro plugin, so @State fails to compile against it.
+if [[ -z "${SDKROOT:-}" ]]; then
+    OS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"
+    MATCHING_SDK="$(ls -d /Library/Developer/CommandLineTools/SDKs/MacOSX${OS_MAJOR}.*.sdk 2>/dev/null | sort -V | tail -1)"
+    [[ -n "$MATCHING_SDK" ]] && export SDKROOT="$MATCHING_SDK"
+fi
+
+echo "==> Building $APP_NAME $VERSION${SDKROOT:+ (SDK: ${SDKROOT:t})}"
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

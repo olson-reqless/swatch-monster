@@ -8,15 +8,18 @@ import ScreenCaptureKit
 ///
 /// Needs Screen Recording permission. If that isn't granted we fall back to the
 /// system sampler so picking still works.
-final class LoupeController: NSObject, NSWindowDelegate {
+final class LoupeController: NSObject {
     static let shared = LoupeController()
 
     // Zoom is "screen points per captured pixel".
     static let minZoom: CGFloat = 4
     static let maxZoom: CGFloat = 48
 
-    private var window: LoupeWindow?
-    private var view: LoupeView?
+    // One overlay per display. macOS gives each display its own Space, so a
+    // single window stretched across all of them only ever shows on one.
+    private var windows: [LoupeWindow] = []
+    private var views: [LoupeView] = []
+    private var appActivationObserver: NSObjectProtocol?
     private var completion: ((NSColor?) -> Void)?
     private var frameTimer: Timer?
     private var isCapturing = false
@@ -28,7 +31,7 @@ final class LoupeController: NSObject, NSWindowDelegate {
 
     private(set) var preciseMode = false
 
-    var isActive: Bool { window != nil }
+    var isActive: Bool { !windows.isEmpty }
 
     private override init() { super.init() }
 
@@ -122,27 +125,46 @@ final class LoupeController: NSObject, NSWindowDelegate {
 
     @MainActor
     private func present() {
-        var union = NSRect.zero
-        for screen in NSScreen.screens {
-            union = union.isEmpty ? screen.frame : union.union(screen.frame)
-        }
-        guard !union.isEmpty else {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else {
             finish(with: nil, fallBackToSystemSampler: true)
             return
         }
 
-        let loupeView = LoupeView(controller: self)
-        let overlay = LoupeWindow(contentRect: union)
-        overlay.contentView = loupeView
+        for screen in screens {
+            let loupeView = LoupeView(controller: self)
+            let overlay = LoupeWindow(contentRect: screen.frame)
+            overlay.contentView = loupeView
+            overlay.setFrame(screen.frame, display: false)
+            windows.append(overlay)
+            views.append(loupeView)
+        }
 
-        overlay.delegate = self
-        window = overlay
-        view = loupeView
-
-        NSApp.activate(ignoringOtherApps: true)
-        overlay.makeKeyAndOrderFront(nil)
-        overlay.makeFirstResponder(loupeView)
+        // The overlay on the cursor's display takes the keyboard (Escape, arrows,
+        // Return); the rest only draw. They're non-activating panels, so they can
+        // take key even when macOS declines to bring a menu-bar app forward.
+        let mouse = NSEvent.mouseLocation
+        let keyIndex = windows.firstIndex { NSMouseInRect(mouse, $0.frame, false) } ?? 0
+        for (index, overlay) in windows.enumerated() where index != keyIndex {
+            overlay.orderFrontRegardless()
+        }
+        NSApp.activate()
+        windows[keyIndex].makeKeyAndOrderFront(nil)
+        windows[keyIndex].makeFirstResponder(views[keyIndex])
         NSCursor.hide()
+
+        // Safety net: if another app comes forward, tear the overlays down rather
+        // than leave invisible full-screen windows eating clicks.
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        appActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            guard app?.processIdentifier != ownPID else { return }
+            Task { @MainActor in self?.finish(with: nil) }
+        }
 
         preciseMode = false
         capture()
@@ -160,10 +182,15 @@ final class LoupeController: NSObject, NSWindowDelegate {
         frameTimer?.invalidate()
         frameTimer = nil
 
-        if window != nil { NSCursor.unhide() }
-        window?.orderOut(nil)
-        window = nil
-        view = nil
+        if let observer = appActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            appActivationObserver = nil
+        }
+
+        if isActive { NSCursor.unhide() }
+        windows.forEach { $0.orderOut(nil) }
+        windows.removeAll()
+        views.removeAll()
         preciseMode = false
 
         let handler = completion
@@ -177,19 +204,12 @@ final class LoupeController: NSObject, NSWindowDelegate {
         handler?(color)
     }
 
-    /// Safety net: if anything steals focus, tear the overlay down rather than
-    /// leaving an invisible full-screen window eating clicks.
-    func windowDidResignKey(_ notification: Notification) {
-        guard isActive else { return }
-        Task { @MainActor in self.finish(with: nil) }
-    }
-
     // MARK: - Input, routed from the view
 
     func setPreciseMode(_ on: Bool) {
         guard preciseMode != on else { return }
         preciseMode = on
-        view?.animateZoomChange()
+        views.forEach { $0.animateZoomChange() }
         capture()
     }
 
@@ -215,7 +235,7 @@ final class LoupeController: NSObject, NSWindowDelegate {
 
     func commitCurrentColor() {
         Task { @MainActor in
-            finish(with: view?.centerColor)
+            finish(with: views.first?.centerColor)
         }
     }
 
@@ -283,9 +303,9 @@ final class LoupeController: NSObject, NSWindowDelegate {
                     return
                 }
                 guard let image else { return }
-                self.view?.update(image: image,
-                                  pixelsAcross: pixelsAcross,
-                                  zoom: zoom)
+                for view in self.views {
+                    view.update(image: image, pixelsAcross: pixelsAcross, zoom: zoom)
+                }
             }
         }
     }
@@ -301,10 +321,10 @@ private extension NSScreen {
 // MARK: - Overlay window
 
 /// Borderless, transparent, above everything, and never captured itself.
-private final class LoupeWindow: NSWindow {
+private final class LoupeWindow: NSPanel {
     init(contentRect: NSRect) {
         super.init(contentRect: contentRect,
-                   styleMask: [.borderless],
+                   styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered,
                    defer: false)
 
@@ -317,6 +337,9 @@ private final class LoupeWindow: NSWindow {
         ignoresMouseEvents = false
         sharingType = .none
         isReleasedWhenClosed = false
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = false
     }
 
     override var canBecomeKey: Bool { true }
@@ -396,7 +419,9 @@ private final class LoupeView: NSView {
 
         let precise = controller?.preciseMode ?? false
         let mouse = NSEvent.mouseLocation
-        guard let windowPoint = window?.convertPoint(fromScreen: mouse) else { return }
+        // Only the overlay on the cursor's display draws the loupe.
+        guard let window, NSMouseInRect(mouse, window.frame, false) else { return }
+        let windowPoint = window.convertPoint(fromScreen: mouse)
         let center = convert(windowPoint, from: nil)
 
         let diameter = LoupeView.diameter
