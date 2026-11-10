@@ -8,6 +8,10 @@ struct LibraryView: View {
     @ObservedObject private var palettes = PaletteLibrary.shared
     @State private var tab = 0
     @State private var selected: Swatch?
+    /// −1…1. Positive tints toward white, negative shades toward black.
+    @State private var tint: Double = 0
+    /// −1…1. Scales LCh chroma; −1 is fully desaturated.
+    @State private var saturation: Double = 0
 
     /// Resolved against the store each render so a rename shows immediately.
     private var active: Swatch? {
@@ -35,6 +39,9 @@ struct LibraryView: View {
             }
         }
         .frame(minWidth: 480, minHeight: 560)
+        // Sliders belong to the color they were moved on; a new selection
+        // starts from zero rather than inheriting someone else's adjustment.
+        .onChange(of: active?.id) { resetAdjustments() }
     }
 
     private var colorsTab: some View {
@@ -114,6 +121,8 @@ struct LibraryView: View {
                 .fixedSize()
             }
 
+            adjust(swatch)
+
             if !palettes.entries.isEmpty {
                 matches(for: swatch)
             }
@@ -148,6 +157,107 @@ struct LibraryView: View {
                     .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
             )
         }
+    }
+
+    // MARK: - Adjust
+
+    private var isAdjusted: Bool { tint != 0 || saturation != 0 }
+
+    private func resetAdjustments() {
+        tint = 0
+        saturation = 0
+    }
+
+    private func adjust(_ swatch: Swatch) -> some View {
+        let result = swatch.adjusted(tint: tint, saturation: saturation)
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("ADJUST")
+                    .font(.caption2.weight(.semibold))
+                    .tracking(0.7)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if isAdjusted {
+                    Button("Reset", action: resetAdjustments)
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                }
+            }
+
+            // Before / after, side by side.
+            HStack(spacing: 0) {
+                Rectangle().fill(swatch.color)
+                Rectangle().fill(result.color)
+                    .overlay(alignment: .bottomTrailing) {
+                        Text(result.hex.uppercased())
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(result.relativeLuminance < 0.4 ? Color.white : Color.black)
+                            .padding(8)
+                    }
+            }
+            .frame(height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+            )
+
+            slider("Tint", value: $tint,
+                   minLabel: "shade", maxLabel: "tint")
+            slider("Saturation", value: $saturation,
+                   minLabel: "grey", maxLabel: "vivid")
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button {
+                    store.copy(result)
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .help("Copy the adjusted color in your default format")
+
+                Button {
+                    let saved = store.addAdjusted(result)
+                    selected = saved
+                } label: {
+                    Label("Save as New Color", systemImage: "plus")
+                }
+                .help("Add the adjusted color to History; the original stays as it is")
+            }
+            .disabled(!isAdjusted)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.04))
+        )
+    }
+
+    private func slider(_ title: String, value: Binding<Double>,
+                        minLabel: String, maxLabel: String) -> some View {
+        VStack(spacing: 2) {
+            HStack {
+                Text(title).font(.callout)
+                Spacer()
+                Text(signedPercent(value.wrappedValue))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: -1...1, step: 0.01) {
+                Text(title)
+            } minimumValueLabel: {
+                Text(minLabel).font(.caption2).foregroundStyle(.secondary)
+            } maximumValueLabel: {
+                Text(maxLabel).font(.caption2).foregroundStyle(.secondary)
+            }
+            .labelsHidden()
+        }
+    }
+
+    private func signedPercent(_ v: Double) -> String {
+        let p = Int((v * 100).rounded())
+        return p > 0 ? "+\(p)%" : "\(p)%"
     }
 
     private func nameBinding(for swatch: Swatch) -> Binding<String> {

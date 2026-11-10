@@ -48,6 +48,44 @@ extension Swatch {
     }
 }
 
+// MARK: - Adjustments
+
+extension Swatch {
+    /// Tint and shade. Positive `amount` (0…1) mixes toward white, negative
+    /// toward black — a straight sRGB mix, which is what Sass `tint()`/`shade()`
+    /// and most design tools mean by the term, so results line up with them.
+    func tinted(by amount: Double) -> Swatch {
+        let t = min(max(amount, -1), 1)
+        let target: Double = t >= 0 ? 1 : 0
+        let k = abs(t)
+        func mix(_ v: Double) -> Double { v + (target - v) * k }
+        var out = Swatch(red: mix(red), green: mix(green), blue: mix(blue))
+        out.alpha = alpha
+        return out
+    }
+
+    /// Scales LCh chroma by `1 + amount` (amount −1…1), holding perceived
+    /// lightness and hue fixed. −1 gives the matching neutral grey; boosts are
+    /// gamut-mapped by `fromLCh`, so they stop at the most vivid sRGB value
+    /// instead of clipping a channel and shifting the hue.
+    func saturated(by amount: Double) -> Swatch {
+        let t = min(max(amount, -1), 1)
+        let c = lch
+        var out = Swatch.fromLCh(L: c.L, C: c.C * (1 + t), h: c.h)
+        out.alpha = alpha
+        return out
+    }
+
+    /// Saturation first, then tint, so the tint slider always ends exactly at
+    /// white or black no matter how saturation is set.
+    func adjusted(tint: Double, saturation: Double) -> Swatch {
+        var out = self
+        if saturation != 0 { out = out.saturated(by: saturation) }
+        if tint != 0 { out = out.tinted(by: tint) }
+        return out
+    }
+}
+
 // MARK: - Harmonies
 
 enum Harmony: String, CaseIterable, Identifiable {

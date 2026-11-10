@@ -81,6 +81,24 @@ final class ColorStore: ObservableObject {
         persist()
     }
 
+    /// Saves an adjusted variant as its own history entry, leaving the source
+    /// color untouched. Returns the stored swatch so the caller can select it.
+    @discardableResult
+    func addAdjusted(_ swatch: Swatch) -> Swatch {
+        var fresh = swatch
+        fresh.id = UUID()
+        fresh.pickedAt = Date()
+        fresh.name = nil
+
+        history.removeAll { $0.hex == fresh.hex }
+        history.insert(fresh, at: 0)
+        if history.count > historyLimit {
+            history.removeLast(history.count - historyLimit)
+        }
+        persist()
+        return fresh
+    }
+
     // MARK: - Clipboard
 
     @discardableResult
